@@ -18,6 +18,7 @@ include_directories(include)
 # Library: SLAM Core
 add_library(slam_backend
   src/slam_graph.cpp
+  src/ekf.cpp
 )
 target_include_directories(slam_backend PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

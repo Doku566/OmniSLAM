@@ -1,36 +1,36 @@
-# OmniSLAM: Graph-Based Dynamic Navigation System
+# OmniSLAM: Graph-Based Navigation for Differential Drive Robots
 
-![ROS 2](https://img.shields.io/badge/ROS2-Humble-22314E.svg) ![C++](https://img.shields.io/badge/C++-20-blue.svg) ![SLAM](https://img.shields.io/badge/SLAM-Graph--Based-green.svg)
+`OmniSLAM` provides a custom C++ implementation of the SLAM backend and State Estimation filters, integrated into a standard ROS 2 Humble structure. This project manually implements the core probability math often abstracted away by libraries like `robot_localization` or `gmapping`.
 
-**OmniSLAM** es un sistema de navegación autónoma completo diseñado para robótica móvil en entornos dinámicos (almacenes, hospitales). Implementa un backend de SLAM basado en grafos para resolver el problema de localización y mapeo simultáneo con precisión centimétrica.
+## Design Decisions
 
-## 🏛️ Arquitectura
-El sistema opera sobre ROS 2 (Robot Operating System) y segrega la lógica en nodos de alto rendimiento:
+### 1. Manual EKF Derivation
+Instead of using a generic Kalman Filter library, I derived and implemented the **Extended Kalman Filter (EKF)** for a Differential Drive kinematic model.
+-   **Why**: To explicitly handle the non-linearities of the motion model ($x' = x + v \cos{\theta} dt$). Standard Linear Kalman Filters diverge immediately in robotics contexts.
+-   **Jacobians**: The state transition Jacobian $G_t$ is computed analytically in `ekf.cpp` to linearize the uncertainty propagation around the current operating point.
 
-1.  **Frontend (Sensor Fusion)**: Procesa raw data de LiDAR y Odometría de ruedas. Utiliza *Point-to-Line ICP* para estimar el movimiento relativo entre frames.
-2.  **Backend (Pose Graph)**: Construye un grafo disperso donde los nodos son las poses del robot y las aristas son restricciones espaciales. Utiliza optimización de mínimos cuadrados no lineales para corregir el drift global.
+### 2. Graph-Based Optimization (Backend)
+The system uses a Pose Graph architecture rather than a Particle Filter (MCL) for the mapping backend.
+-   **Why**: Particle filters struggle with loop closure in large environments due to particle depletion. Graph optimization (Least Squares on constraints) allows correcting the entire trajectory history when a loop is closed.
 
-## 🚀 Retos Técnicos Superados
+## Trade-offs and Limitations
 
-### Corrección de Drift mediante Loop Closure
-La odometría mecánica (encoders) sufre de error acumulativo ilimitado.
-*   **Problema**: Tras 50m de recorrido, el robot cree estar 2m lejos de su posición real.
-*   **Solución**: Implementé un detector de *Loop Closure* basado en histogramas de descriptores de escaneo. Cuando el robot vuelve a una zona conocida, se añade una "Arista de Cierre" al grafo. El backend (G2O/Custom Solver) utiliza esta restricción fuerte para "doblar" toda la trayectoria pasada, distribuyendo el error acumulado y cerrando el mapa de manera consistente.
+*   **Linearization Error**: The EKF relies on a first-order Taylor expansion. In highly dynamic turns with large time steps ($dt$), the linearization error accumulates, causing the estimated covariance $P$ to become inconsistent with true error. An Unscented Kalman Filter (UKF) would improve this but is computationally heavier.
+*   **Sensor Noise Models**: The current `Q` (Process Noise) and `R` (Measurement Noise) matrices are tuned with fixed constants. In a production system, these should ideally be adaptive.
+*   **2D Only**: The system assumes a planar world (`z=0`). It will fail on ramps or uneven terrain.
 
-## 📊 Análisis de Complejidad Computacional
+## Current Status
 
-### Optimización del Grafo
-Resolver el sistema $H\Delta x = -b$ para encontrar la configuración óptima de poses.
-*   **Matriz Hessiana ($H$)**: Es una matriz dispersa por bloques. Aunque el tamaño es $O(N^2)$, la estructura de banda permite usar descomposición *Sparse Cholesky*.
-*   **Complejidad**: Típicamente $O(N^{1.5})$ en 2D, donde $N$ es el número de poses.
-*   **Marginalización**: Para mantener la operación en tiempo real ($O(1)$ amortizado), las poses antiguas lejos de la ventana activa se marginalizan (Schur Complement) o se fijan, evitando que el grafo crezca indefinidamente en memoria operativa.
+-   [x] **State Estimation**: Manual EKF implemented (`src/ekf.cpp`) with Jacobian derivation.
+-   [x] **Graph Backend**: `PoseGraph` structure and error functions implemented.
+-   [x] **Ros Wrapper**: `package.xml` and `CMakeLists.txt` fully compliant with ROS 2 Humble.
+-   [ ] **Solver Integration**: The optimization loop (`optimize()`) computes the Chi-Square error but currently mocks the actual solver step (Placeholder for Ceres/G2O integration).
 
-## 🛠️ Build & Run (Docker)
+## Complexity Analysis
 
-```bash
-# Construir la imagen con ROS 2 Humble
-docker build -t omnislam -f Dockerfile .
+### EKF Prediction Step
+*   **Time**: $O(D^3)$ due to matrix multiplication of covariance $P$ ($3 \times 3$), which effectively is constant $O(1)$ for this fixed state size.
 
-# Ejecutar tests
-docker run omnislam colcon test --packages-select omnislam_core
-```
+### Graph Optimization (One Iteration)
+*   **Time**: $O(N \cdot k^2)$ per iteration using Sparse Cholesky, where $N$ is the number of poses and $k$ is the average degree (connectivity).
+*   **Space**: $O(N)$ to store the trajectory.
